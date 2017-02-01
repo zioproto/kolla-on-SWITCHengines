@@ -1,0 +1,40 @@
+---
+build_nodes:
+  - operatorseed
+  - controller01
+  - controller02
+  - controller03
+  - network01
+  - network02
+  - compute01
+  - storage01
+  - monitoring01
+  - haproxy01
+
+secgroups:
+  - default
+
+# Base image.  This needs to be Debian-based because we install
+# packages using "apt".  Tested on Ubuntu 16.04 LTS "Xenial Xerus".
+#
+image: Ubuntu Xenial 16.04 (SWITCHengines)
+
+flavor: m1.xlarge
+
+# SSH public key for access to the build nodes
+# It will be created in the current folder
+
+key_name: kolla
+
+# The network to which the build nodes should be connected.
+# It will be created
+net_name: kolla
+
+# The name of the public network for the floating IPs
+net_public: public
+
+# The user as which Ansible will connect to the build nodes.  This
+# should be the default user of the selected image.  Ideally this user
+# has passwordless sudo access.
+ansible_user: ubuntu
+

@@ -1,0 +1,21 @@
+# These initial groups are the only groups required to be modified. The
+# additional groups are for more control of the environment.
+[control]
+# These hostname must be resolvable from your deployment host
+controller[01:03]
+
+[proxy]
+haproxy01
+
+[baremetal:children]
+control
+proxy
+
+[mariadb:children]
+control
+
+[rabbitmq:children]
+control
+
+[haproxy:children]
+proxy

@@ -1,0 +1,209 @@
+---
+- name: Start VMs for Overcloud Infrastructure
+  hosts: localhost
+  vars_files:
+    - vars.yaml
+  tasks:
+# Create a network and subnet and a router
+  - os_network:
+      state: present
+      name: "{{net_name}}"
+  - os_subnet:
+      state: present
+      network_name: "{{net_name}}"
+      name: subnet
+      cidr: 192.168.22.0/24
+  - os_router:
+      state: present
+      name: kollakolla
+      network: "{{net_public}}"
+      interfaces:
+        - subnet
+# We create now a port and we book an IP to be used as a VIP for HA
+  - name: Create a port with a static VIP
+    os_port:
+      state: present
+      auth:
+        auth_url: "{{ lookup('env', 'OS_AUTH_URL') }}"
+        username: "{{ lookup('env', 'OS_USERNAME') }}"
+        password: "{{ lookup('env', 'OS_PASSWORD') }}"
+        project_name: "{{ lookup('env', 'OS_TENANT_NAME') }}"
+      name: vip
+      network: "{{net_name}}"
+      fixed_ips:
+        - ip_address: "192.168.22.22"
+
+# Openstack has antispoofing by default. This is suboptimal, we just enable any VM in this playbook to use also the VIP
+# It would be enough to do this for the VMs that will run HAProxy, but it is premature optimization for this playbook
+# I am writing just to debug and learn Kolla
+
+  - name: Make VIP ip accessible on all VMs
+    os_port:
+      auth:
+        auth_url: "{{ lookup('env', 'OS_AUTH_URL') }}"
+        username: "{{ lookup('env', 'OS_USERNAME') }}"
+        password: "{{ lookup('env', 'OS_PASSWORD') }}"
+        project_name: "{{ lookup('env', 'OS_TENANT_NAME') }}"
+      state: present
+      network: "{{net_name}}"
+      name: "{{item}}"
+      allowed_address_pairs:
+        - ip_address: "192.168.22.22"
+    with_items: "{{ build_nodes }}"
+
+# Now we create a floating IP and we point it to the VIP
+# I was not able to do it with the os_floating_ip ansible module, because the module expects a server
+# In this case we are just binding the floating IP to a port. The port has then the IP that is a VIP and not
+# attached to a specific server
+# This command will return 0 the first time, and all the following time you run the playbook it will return 'Conflict'
+# because the floating IP is already there
+
+  - name: assign a floating IP to VIP port
+    command: "openstack floating ip create --port vip {{net_public}}"
+    ignore_errors: yes
+
+#This creates a ssh private key in the local folder and uploads the public key into openstack (4 tasks)
+
+  - name: test for presence of local keypair
+    stat: path="./{{key_name}}"
+    register: testenv_keypair_local
+
+  - name: delete remote keypair
+    os_keypair:
+      name: "{{key_name}}"
+      state: absent
+    when: not testenv_keypair_local.stat.exists
+
+  - name: create the keypair
+    os_keypair:
+      name: "{{key_name}}"
+      state: present
+    register: testenv_keypair
+
+  - name: persist the keypair
+    copy:
+      dest: "./{{key_name}}"
+      content: "{{ testenv_keypair.key.private_key }}"
+      mode: 0600
+    when: testenv_keypair.changed
+
+
+  - name: launch the VMs that will be the baremetal Kolla servers
+    os_server:
+      name: "{{item}}"
+      state: present
+      auth:
+        auth_url: "{{ lookup('env', 'OS_AUTH_URL') }}"
+        username: "{{ lookup('env', 'OS_USERNAME') }}"
+        password: "{{ lookup('env', 'OS_PASSWORD') }}"
+        project_name: "{{ lookup('env', 'OS_TENANT_NAME') }}"
+      image: "{{image}}"
+      security_groups: "{{secgroups}}"
+      flavor: "{{flavor}}"
+      key_name: "{{key_name}}"
+      nics:
+        - port-name: "{{item}}"
+      wait: yes
+    register: osinstance
+    with_items: "{{ build_nodes }}"
+
+  - name: Wait 5 seconds
+    pause: seconds=5
+    when: "{{ item.changed }}"
+    with_items: "{{ osinstance.results }}"
+
+  - name: Add new VM to ansible inventory
+    add_host:
+      name: "{{ item.server.name }}"
+      ansible_host: "{{item.server.public_v4}}"
+      ansible_user: "{{ansible_user}}"
+      ansible_ssh_common_args: -i "./{{key_name}}" -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no
+      groups: build_hosts
+    with_items: "{{ osinstance.results }}"
+
+# Hack /etc/hosts on all hosts so that every server can resolve another
+- name: Configure all hosts
+  vars_files:
+    - vars.yaml
+  become: true
+  hosts: "{{ build_nodes }}"
+  tasks:
+  - name: "Build hosts file"
+    lineinfile: dest=/etc/hosts regexp='.*{{ item }}$' line="{{ hostvars[item].ansible_default_ipv4.address }} {{item}}" state=present
+    when: hostvars[item].ansible_default_ipv4.address is defined
+    with_items: "{{ build_nodes }}"
+
+- name: Configure operator seed node
+  vars_files:
+    - vars.yaml
+  become: true
+  hosts:  operatorseed
+  tasks:
+    - name: add key for Docker repo
+      apt_key: keyserver=keyserver.ubuntu.com id=F76221572C52609D
+    - name: add docker repo
+      apt_repository: repo='deb http://apt.dockerproject.org/repo ubuntu-xenial main' state=present filename='docker'
+    - name: install docker
+      apt:
+        name: docker-engine
+        state: latest
+        update_cache: yes
+    - name: kolla directory
+      file: path=/etc/kolla state=directory
+    - name: upload globals
+      copy:
+        src: ./files/globals.yml
+        dest: /etc/kolla/globals.yml
+        mode: 0664
+        owner: ubuntu
+    - name: Upload key to seed node
+      copy:
+        src: ./{{key_name}}
+        dest: /home/ubuntu/.ssh/id_rsa
+        mode: 0400
+        owner: ubuntu
+    - name: Upload SNAP Kolla package to Operator node
+      copy:
+        src: ./files/zioproto-kolla_3.0.2_amd64.snap
+        dest: ~/zioproto-kolla_3.0.2_amd64.snap
+        mode: 0400
+    - name: Update snapd
+      apt:
+        name: snapd 
+        state: latest 
+        update_cache: yes
+    - name: install kolla
+      command: snap install ~/zioproto-kolla_3.0.2_amd64.snap --dangerous --classic
+    - name: create snap aliases
+      shell: "ls -1 /snap/bin/zioproto-kolla.* | cut -f 2 -d . | xargs sudo snap alias zioproto-kolla"
+    - name: inventory directory
+      file: path=/home/ubuntu/inventory state=directory
+    - name: test for presence of inventory file
+      stat: path="/home/ubuntu/inventory/multinode"
+      register: multinodefile
+    - name: copy inventory
+      copy:
+        remote_src: True
+        src: /snap/zioproto-kolla/current/share/kolla/ansible/inventory/multinode
+        dest: /home/ubuntu/inventory/multinode
+        mode: 0664
+        owner: ubuntu
+      when: not multinodefile.stat.exists
+    - name: test for presence of password file
+      stat: path="/etc/kolla/passwords.yml"
+      register: passwordsyml
+    - name: copy password file
+      copy:
+        remote_src: True
+        src: /snap/zioproto-kolla/current/share/kolla/etc_examples/kolla/passwords.yml
+        dest: /etc/kolla/passwords.yml
+        mode: 0664
+        owner: ubuntu
+      when: not passwordsyml.stat.exists
+    - name: copy example MariaDB and RabbitMQ inventory
+      copy:
+        src: files/mariadb
+        dest: inventory/mariadb
+
+
+
