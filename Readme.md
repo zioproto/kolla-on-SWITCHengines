@@ -3,7 +3,7 @@
 
 It is about a week that I am playing with Kolla. I think sharing my notes is good for the Openstack operators community.
 
-Up to `stable/newton` Kolla is a single project that lives in the git repository:
+Up to `stable/newton`, Kolla is a single project that lives in the git repository:
 
  - https://github.com/openstack/kolla
 
@@ -27,7 +27,7 @@ There are already some openstack tools packaged with snapcraft:
 
  - https://github.com/openstack-snaps
 
-I looked at what was already done and I tried to package a snap for Kolla my self:
+I looked at what was already done, and I tried to package a snap for Kolla myself:
 
  - https://github.com/zioproto/snap-kolla
 
@@ -58,7 +58,7 @@ In the standard setup the frontend nodes are called `network` because they act a
 
 # Run the playbook
 
-To get started source your openstack config and get a tenant with enough quota and run this ansible playbook:
+To get started, source your openstack config and get a tenant with enough quota and run this ansible playbook:
 ```
 cp vars.yaml.template vars.yaml
 vim vars.yaml # add your custom config
@@ -82,7 +82,7 @@ rabbitmq_cluster_cookie:
 haproxy_password:
 ```
 
-If you want you can also just type `kolla-genpwd` and this will enter some password for all the fields in the file.
+If you want, you can also just type `kolla-genpwd`, and this will enter some password for all the fields in the file.
 
 Now let's get ready to run ansible:
 
